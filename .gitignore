@@ -1,0 +1,16 @@
+node_modules
+dist
+*.log
+
+# Local notes and settings, kept out of the repository
+docs/local.md
+.env
+.env.*
+*.local
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

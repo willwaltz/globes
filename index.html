@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Globes</title>
+    <style>
+      /* (Until the app's stylesheet loads, and for a fatal error before the interface exists.) */
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #020309; }
+      .globes-error {
+        position: fixed; inset: 0; display: grid; place-items: center; padding: 24px;
+        color: #c8d0ff; font: 15px/1.5 system-ui, sans-serif; text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"><div id="stage"></div></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

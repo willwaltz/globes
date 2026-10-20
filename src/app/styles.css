@@ -1,0 +1,521 @@
+/* Globes app: the stage fills the window, whatever its shape or size (a phone held upright to
+   an 8K ultrawide), with the interface over the live globe. Sizes are in stage units (cqh:
+   hundredths of its height, as the globe's own size is), so the layout scales with the window. */
+
+:root {
+  --ink: #f1f8ff;
+  --ink-2: rgba(222, 238, 252, 0.78);
+  --line: rgba(168, 214, 245, 0.17);
+  --line-strong: rgba(186, 226, 252, 0.33);
+  --glass: rgba(3, 24, 40, 0.4);
+  --glass-hover: rgba(8, 48, 74, 0.55);
+  --accent: #8fe3ff;
+  --backdrop: #01060d;
+  --font: 'Inter Variable', 'Inter', 'Segoe UI Variable', 'SF Pro Display', 'Noto Sans', system-ui, sans-serif;
+  --ease: cubic-bezier(0.16, 0.84, 0.3, 1);
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--backdrop);
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop);
+}
+
+#stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  container-type: size;
+  background: #03111d;
+  font-family: var(--font);
+  font-feature-settings: 'cv11', 'ss01';
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+#stage canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  touch-action: none;
+}
+
+/* ------------------------------------------------------------------ interface layer */
+
+.ui {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 0.55s ease, visibility 0s;
+}
+
+.ui button {
+  pointer-events: auto;
+}
+
+.ui[data-mode='loading'] {
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.45s ease, visibility 0s 0.45s;
+}
+
+.icon {
+  width: 1.15em;
+  height: 1.15em;
+  flex: none;
+}
+
+/* Tips: an icon's name, shown above it on hover. */
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 1.3cqh);
+  padding: 0.7cqh 1.2cqh;
+  border-radius: 0.8cqh;
+  background: rgba(2, 14, 26, 0.78);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: max(1.35cqh, 11px);
+  font-weight: 560;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 0.5cqh);
+  transition: opacity 0.2s ease, transform 0.3s var(--ease);
+}
+
+[data-tip]:hover::after {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  transition-delay: 0.35s;
+}
+
+/* Top bar: the mark, and (in the desktop app) the way to put the globe on the desktop. Its tips
+   hang below. */
+
+.ui-top {
+  position: absolute;
+  top: 4.6cqh;
+  left: max(5.2cqh, env(safe-area-inset-left));
+  right: max(5.2cqh, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  display: flex;
+}
+
+.brand-mark {
+  width: max(3.3cqh, 22px);
+  height: max(3.3cqh, 22px);
+  color: var(--accent);
+  filter: drop-shadow(0 0 1.2cqh rgba(143, 227, 255, 0.35));
+}
+
+.ui-top [data-tip]::after {
+  top: calc(100% + 1.3cqh);
+  bottom: auto;
+  transform: translate(-50%, -0.5cqh);
+}
+
+.ui-top [data-tip]:hover::after {
+  transform: translate(-50%, 0);
+}
+
+.round[hidden] {
+  display: none;
+}
+
+/* On its way to the desktop: a ring turns round the button. */
+.round.is-busy::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+}
+
+.round.is-busy::after {
+  display: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+
+/* The arrows: under the globe where it rests (the shell gives the foot of its outline, --x and
+   --y), and never lower than the stage's foot allows. */
+.nav {
+  position: absolute;
+  left: var(--x, 50%);
+  top: min(calc(var(--y, 80cqh) + 3.4cqh), calc(100cqh - max(4.6cqh, env(safe-area-inset-bottom)) - max(5.6cqh, 40px)));
+  display: flex;
+  gap: max(2.2cqh, 14px);
+  transform: translateX(-50%);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.round {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: max(5.6cqh, 40px);
+  height: max(5.6cqh, 40px);
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--glass);
+  color: var(--ink);
+  font-size: max(2.4cqh, 16px);
+  cursor: pointer;
+  backdrop-filter: blur(1.6cqh);
+  transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease, transform 0.2s ease;
+}
+
+.round:hover:not(:disabled) {
+  background: var(--glass-hover);
+  border-color: rgba(230, 236, 255, 0.5);
+}
+
+.round:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.round:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.round.is-busy:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+
+.ui :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* ------------------------------------------------------------------ coming-soon veil */
+
+.teaser {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  pointer-events: none;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 38%, rgba(10, 62, 92, 0.3), rgba(2, 12, 24, 0.66) 72%);
+  backdrop-filter: blur(2.2cqh) saturate(0.55) brightness(0.72);
+  box-shadow: inset 0 0 0 1px rgba(214, 220, 255, 0.18);
+  color: rgba(170, 230, 210, 0.42);
+  transition: opacity 0.4s ease;
+}
+
+.teaser[hidden] {
+  display: grid;
+  opacity: 0;
+}
+
+.teaser-art,
+.teaser-label {
+  rotate: var(--turn, 0rad);
+}
+
+.teaser-art {
+  position: absolute;
+  inset: 12% 14% 0;
+  width: 72%;
+  height: 88%;
+}
+
+.teaser-label {
+  position: relative;
+  padding: 1cqh 2.2cqh;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: rgba(2, 14, 26, 0.6);
+  color: var(--ink);
+  font-size: 1.55cqh;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* ------------------------------------------------------------------ toast, splash */
+
+.toast {
+  position: absolute;
+  left: 50%;
+  top: 4.6cqh;
+  display: flex;
+  align-items: center;
+  gap: 0.9cqh;
+  padding: 1.2cqh 2.2cqh;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(2, 14, 26, 0.62);
+  backdrop-filter: blur(1.6cqh);
+  font-size: 1.5cqh;
+  color: var(--ink-2);
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -1.2cqh);
+  transition: opacity 0.45s ease, transform 0.6s var(--ease);
+}
+
+.toast.is-on {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.splash {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 1.6cqh;
+  background: radial-gradient(ellipse at 50% 38%, #0b3350 0%, #031321 58%, #010810 100%);
+  transition: opacity 0.9s ease;
+}
+
+.splash.is-done {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.splash-mark {
+  width: 7cqh;
+  height: 7cqh;
+  color: var(--accent);
+  stroke-width: 1.2;
+}
+
+.splash-bar {
+  position: relative;
+  width: 16cqh;
+  height: 2px;
+  margin-top: 1.4cqh;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line);
+}
+
+.splash-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: splash-slide 1.25s var(--ease) infinite;
+}
+
+@keyframes splash-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
+.splash-error {
+  max-width: 50cqh;
+  margin: 1.4cqh 0 0;
+  font-size: 1.6cqh;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ the pointer (cursor.ts) */
+
+html.custom-cursor,
+html.custom-cursor * {
+  cursor: none !important;
+}
+
+.cursor {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+  overflow: hidden;
+  transition: opacity 0.3s ease;
+}
+
+.cursor.is-hidden,
+.cursor.is-idle {
+  opacity: 0;
+}
+
+.cursor.is-idle {
+  transition: opacity 0.8s ease;
+}
+
+.cursor-dot,
+.cursor-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+}
+
+.cursor-core {
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: #f2fdff;
+  box-shadow: 0 0 6px rgba(143, 227, 255, 0.9), 0 0 16px rgba(143, 227, 255, 0.35);
+  transition: transform 0.3s var(--ease), opacity 0.25s ease;
+}
+
+.cursor-circle {
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1.25px solid rgba(206, 244, 255, 0.55);
+  background: rgba(143, 227, 255, 0);
+  box-shadow: 0 0 12px rgba(143, 227, 255, 0.14), inset 0 0 8px rgba(143, 227, 255, 0.1);
+  transition: transform 0.4s var(--ease), background-color 0.25s ease, border-color 0.25s ease;
+}
+
+.cursor-tilt,
+.cursor-spin {
+  position: absolute;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  color: rgba(214, 246, 255, 0.85);
+  opacity: 0;
+  transform: scale(0.8);
+  transition: opacity 0.3s ease, transform 0.4s var(--ease);
+}
+
+.cursor[data-state='press'] .cursor-circle {
+  transform: scale(1.4);
+  background: rgba(143, 227, 255, 0.1);
+  border-color: rgba(222, 248, 255, 0.85);
+}
+
+.cursor[data-state='press'] .cursor-core {
+  transform: scale(0.5);
+}
+
+.cursor[data-state='globe'] .cursor-circle {
+  transform: scale(1.3);
+}
+
+.cursor[data-state='hold'] .cursor-circle {
+  transform: scale(1.1);
+  background: rgba(143, 227, 255, 0.12);
+  border-color: rgba(222, 248, 255, 0.85);
+}
+
+.cursor[data-state='globe']:not(.is-turn) .cursor-tilt,
+.cursor[data-state='hold']:not(.is-turn) .cursor-tilt,
+.cursor[data-state='globe'].is-turn .cursor-spin,
+.cursor[data-state='hold'].is-turn .cursor-spin {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.cursor[data-state='hold'] .cursor-tilt,
+.cursor[data-state='hold'] .cursor-spin {
+  transform: scale(0.92);
+}
+
+.cursor.is-down .cursor-circle {
+  transform: scale(0.8);
+}
+
+.cursor-ripple {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  border: 1px solid rgba(206, 244, 255, 0.7);
+  animation: cursor-ripple 0.8s cubic-bezier(0.2, 0.7, 0.3, 1) forwards;
+}
+
+@keyframes cursor-ripple {
+  from {
+    transform: scale(0.5);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(2.8);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    transition-duration: 0.01s;
+  }
+  .splash-bar::after {
+    animation-duration: 3s;
+  }
+  .cursor-ripple {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------------------------ a globe on the desktop */
+
+/* The window is clear: only the globe is drawn, over whatever is behind it. */
+html.desktop,
+html.desktop body,
+html.desktop #app {
+  background: transparent;
+}
+
+html.desktop #stage {
+  background: transparent;
+}
+
+html.desktop #stage canvas {
+  opacity: 0;
+  transition: opacity 0.9s ease;
+}
+
+html.desktop #stage canvas.is-live {
+  opacity: 1;
+}
