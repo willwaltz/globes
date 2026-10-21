@@ -7,20 +7,21 @@
 @group(0) @binding(3) var<storage, read_write> affine: array<vec4f>;
 @group(0) @binding(4) var<storage, read> gridVel: array<f32>;
 @group(0) @binding(5) var<storage, read> gridVelOld: array<f32>;
-@group(0) @binding(6) var<storage, read_write> stats: array<atomic<u32>>;
-@group(0) @binding(7) var sandTex: texture_2d<f32>;
-@group(0) @binding(8) var sandSamp: sampler;
+@group(0) @binding(6) var sandTex: texture_2d<f32>;
+@group(0) @binding(7) var sandSamp: sampler;
 // The white water (SHED: the splash, splash.wgsl spSpawn, and the sea foam globe's foam and
 // bubbles, foam.wgsl wwSpawn): per particle that sheds any in a substep, two entries: (where
 // (bits), what it sheds), (its velocity, the time left in the frame (bits)); counted in
 // foamCtrl[FOAM_CTRL_QUEUE]. And the water's density field.
-@group(0) @binding(9) var<storage, read_write> foamQueue: array<vec4u>;
-@group(0) @binding(10) var<storage, read_write> foamCtrl: array<atomic<u32>>;
-@group(0) @binding(11) var<storage, read> field: array<f32>;
+@group(0) @binding(8) var<storage, read_write> foamQueue: array<vec4u>;
+@group(0) @binding(9) var<storage, read_write> foamCtrl: array<atomic<u32>>;
+@group(0) @binding(10) var<storage, read> field: array<f32>;
+// Where the stats (the fastest particle's speed squared) lie in blockCount: after the blocks'.
+override STATS: u32 = 0u;
 // The sort's keys (KEYS: sort.wgsl): per particle, its block and its place in it; and the blocks'
 // counts.
-@group(0) @binding(12) var<storage, read_write> sortSlot: array<vec2u>;
-@group(0) @binding(13) var<storage, read_write> blockCount: array<atomic<u32>>;
+@group(0) @binding(11) var<storage, read_write> sortSlot: array<vec2u>;
+@group(0) @binding(12) var<storage, read_write> blockCount: array<atomic<u32>>;
 
 // The particles carry an affine velocity (SimConfig.affineStrength > 0; else it is not kept).
 override AFFINE: bool = false;
@@ -234,7 +235,7 @@ fn g2pMove(p: u32) -> vec3f {
     affine[3u * p + 1u] = vec4f(sv.grad, 0.0);
     affine[3u * p + 2u] = vec4f(sw.grad, 0.0);
   }
-  atomicMax(&stats[0], bitcast<u32>(dot(vNew, vNew)));
+  atomicMax(&blockCount[STATS], bitcast<u32>(dot(vNew, vNew)));
   return xNew;
 }
 

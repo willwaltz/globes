@@ -19,19 +19,22 @@
 @group(0) @binding(4) var<storage, read> rPrim: array<vec4u>;
 @group(0) @binding(5) var<storage, read_write> rVert: array<vec4f>;
 @group(0) @binding(6) var<storage, read_write> rBox: array<vec4f>;
-@group(0) @binding(7) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(8) var<storage, read_write> cellFill: array<atomic<u32>>;
-@group(0) @binding(9) var<storage, read_write> cellRange: array<vec2u>;
-@group(0) @binding(10) var<storage, read_write> refTotal: array<atomic<u32>>;
-@group(0) @binding(11) var<storage, read_write> shadeAcc: array<atomic<u32>>;
-@group(0) @binding(12) var<uniform> R: ReefParams;
-@group(0) @binding(13) var<storage, read> fishBody: array<vec4f>;
-@group(0) @binding(14) var primTex: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(15) var cellTex: texture_storage_3d<rg32float, write>;
-@group(0) @binding(16) var refTex: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(17) var shadeTex: texture_storage_3d<rgba16float, write>;
-@group(0) @binding(18) var<storage, read> rCoral: array<vec4f>;
-@group(0) @binding(19) var<storage, read> rCoralInfo: array<vec4f>;
+@group(0) @binding(7) var<storage, read_write> cellRange: array<vec2u>;
+// The counters, in one binding: each cell's count and fill, the reference total, the opacity grid.
+@group(0) @binding(8) var<storage, read_write> acc: array<atomic<u32>>;
+@group(0) @binding(9) var<uniform> R: ReefParams;
+@group(0) @binding(10) var<storage, read> fishBody: array<vec4f>;
+@group(0) @binding(11) var primTex: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(12) var cellTex: texture_storage_3d<rg32float, write>;
+@group(0) @binding(13) var refTex: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(14) var shadeTex: texture_storage_3d<rgba16float, write>;
+// Per coral branch, three entries: its two ends, then its info.
+@group(0) @binding(15) var<storage, read> rCoral: array<vec4f>;
+
+const CELLS: u32 = u32(REEF_GRID) * u32(REEF_GRID) * u32(REEF_GRID);
+const FILL_AT: u32 = CELLS;
+const TOTAL_AT: u32 = 2u * CELLS;
+const SHADE_AT: u32 = 2u * CELLS + 4u;
 
 const PRIM_TENTACLE: u32 = 0u;
 const PRIM_BULB: u32 = 1u;
@@ -50,11 +53,8 @@ fn reefTouch() {
   _ = arrayLength(&rPrim);
   _ = arrayLength(&rVert);
   _ = arrayLength(&rBox);
-  _ = arrayLength(&cellCount);
-  _ = arrayLength(&cellFill);
   _ = arrayLength(&cellRange);
-  _ = arrayLength(&refTotal);
-  _ = arrayLength(&shadeAcc);
+  _ = arrayLength(&acc);
   _ = R.counts;
   _ = arrayLength(&fishBody);
   _ = textureDimensions(primTex);
@@ -62,7 +62,6 @@ fn reefTouch() {
   _ = textureDimensions(refTex);
   _ = textureDimensions(shadeTex);
   _ = arrayLength(&rCoral);
-  _ = arrayLength(&rCoralInfo);
 }
 
 fn reefCellOf(x: vec3f) -> vec3i {
@@ -90,7 +89,7 @@ fn reefShadow(x: vec3f, area: f32) {
     let q = b + vec3i(o);
     if (any(q < vec3i(0)) || any(q >= vec3i(n))) { continue; }
     let wv = mix(1.0 - f, f, vec3f(o));
-    atomicAdd(&shadeAcc[u32(q.x + n * (q.y + n * q.z))], u32(max(area, 0.0) * wv.x * wv.y * wv.z * SHADE_FP));
+    atomicAdd(&acc[SHADE_AT + u32(q.x + n * (q.y + n * q.z))], u32(max(area, 0.0) * wv.x * wv.y * wv.z * SHADE_FP));
   }
 }
 
@@ -223,7 +222,7 @@ fn reefPrims(@builtin(global_invocation_id) gid: vec3u) {
     reefShadow(c, 3.14159 * rs * mix(rs, rl, length(cross(axis, sun))) * SHADOW_BOOST);
   } else if (pr.x != PRIM_BODY) {
     // A branch of a coral: fixed to the rock, so it turns with the globe.
-    let i0 = 2u * pr.y;
+    let i0 = 3u * pr.y;
     let ca = rCoral[i0];
     let cb = rCoral[i0 + 1u];
     let a = reef_rot(R) * ca.xyz;
@@ -231,7 +230,7 @@ fn reefPrims(@builtin(global_invocation_id) gid: vec3u) {
     let r = max(ca.w, cb.w);
     t0 = vec4f(a, r);
     t1 = vec4f(b, f32(pr.x));
-    t2 = rCoralInfo[pr.y];
+    t2 = rCoral[i0 + 2u];
     lo = min(a, b) - vec3f(r);
     hi = max(a, b) + vec3f(r);
     let ab = b - a;
@@ -289,7 +288,7 @@ fn reefPrims(@builtin(global_invocation_id) gid: vec3u) {
   for (var z = c0.z; z <= c1.z; z++) {
     for (var y = c0.y; y <= c1.y; y++) {
       for (var x = c0.x; x <= c1.x; x++) {
-        atomicAdd(&cellCount[reefCellIndex(vec3i(x, y, z))], 1u);
+        atomicAdd(&acc[reefCellIndex(vec3i(x, y, z))], 1u);
       }
     }
   }
@@ -300,14 +299,14 @@ fn reefAlloc(@builtin(global_invocation_id) gid: vec3u) {
   reefTouch();
   if (any(gid >= vec3u(u32(REEF_GRID)))) { return; }
   let c = reefCellIndex(vec3i(gid));
-  var n = atomicLoad(&cellCount[c]);
+  var n = atomicLoad(&acc[c]);
   var start = 0u;
   if (n > 0u) {
-    start = atomicAdd(&refTotal[0], n);
+    start = atomicAdd(&acc[TOTAL_AT], n);
     n = select(min(n, REEF_REF_CAP - start), 0u, start >= REEF_REF_CAP);
   }
   cellRange[c] = vec2u(start, n);
-  atomicStore(&cellFill[c], 0u);
+  atomicStore(&acc[FILL_AT + c], 0u);
   textureStore(cellTex, vec3i(gid), vec4f(f32(start), f32(n), 0.0, 0.0));
 }
 
@@ -329,7 +328,7 @@ fn reefFill(@builtin(global_invocation_id) gid: vec3u) {
       for (var x = c0.x; x <= c1.x; x++) {
         let c = reefCellIndex(vec3i(x, y, z));
         let rg = cellRange[c];
-        let s = atomicAdd(&cellFill[c], 1u);
+        let s = atomicAdd(&acc[FILL_AT + c], 1u);
         if (s < rg.y) {
           let slot = rg.x + s;
           textureStore(refTex, vec2i(i32(slot % REEF_REF_WIDTH), i32(slot / REEF_REF_WIDTH)), sphere);
@@ -346,6 +345,6 @@ fn reefShade(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid >= vec3u(n))) { return; }
   let i = gid.x + n * (gid.y + n * gid.z);
   let vox = 2.0 * P.radius / f32(n);
-  let sigma = f32(atomicLoad(&shadeAcc[i])) / SHADE_FP / (vox * vox * vox);
+  let sigma = f32(atomicLoad(&acc[SHADE_AT + i])) / SHADE_FP / (vox * vox * vox);
   textureStore(shadeTex, vec3i(gid), vec4f(sigma, 0.0, 0.0, 1.0));
 }

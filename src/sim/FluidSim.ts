@@ -629,7 +629,7 @@ export class FluidSim {
       const enc = this.device.createCommandEncoder({ label: 'sim substep' });
       enc.clearBuffer(b.accum);
       enc.clearBuffer(b.cellCount);
-      if (i === 0) enc.clearBuffer(b.stats);
+      if (i === 0) enc.clearBuffer(b.blockCount, this.statsOffset(), 16);
 
       if (i === 0) {
         // Once per frame: carry the sand round with the glass, let it creep, then rebuild the
@@ -1031,7 +1031,8 @@ export class FluidSim {
       vel2: make('particle vel (sorted)', P * PARTICLE_FLOATS * 4),
       affine2: make('particle affine (sorted)', affine),
       sortSlot: make('particle sort slots', P * 8),
-      blockCount: make('sort block counts', blocks * 4),
+      // (Then the stats, 16 B: g2p's own buffer would be one storage buffer too many for it.)
+      blockCount: make('sort block counts and stats', blocks * 4 + 16),
       // (Then the scan's workgroups' totals: sort.wgsl.)
       blockStart: make('sort block starts', (blocks + 1 + Math.ceil(blocks / 256)) * 4),
       accum: make('p2g accum', F3 * 8),
@@ -1047,7 +1048,6 @@ export class FluidSim {
       psi: make('pressure', C * 4),
       rhs: make('pressure rhs', C * 8),
       pressureTiles: make('pressure tiles', pressureTiles * 4),
-      stats: make('stats', 16),
       dens: make('density accum', M3 * 4),
       field: make('density field', M3 * 4),
       sandT: make('sand thickness', this.sandN * this.sandN * 4),
@@ -1101,7 +1101,7 @@ export class FluidSim {
     const sandView = this.sandTexture.createView();
     const sand = [sandView, this.sandSampler];
     // (g2p binds the white water's queue in every globe: only its SHED variant writes it.)
-    const g2pSets = parts((q) => [q.pos, q.vel, q.affine, b.velTmp, b.velOld, b.stats, ...sand, ww.queue, ww.ctrl, b.field, b.sortSlot, b.blockCount]);
+    const g2pSets = parts((q) => [q.pos, q.vel, q.affine, b.velTmp, b.velOld, ...sand, ww.queue, ww.ctrl, b.field, b.sortSlot, b.blockCount]);
     const defs: [string, string, string, Resource[][], Record<string, number>?][] = [
       ['rockBed', `${rockWGSL()}\n${rockBedWGSL}`, 'rockBed', [[b.rockTop, b.sandRest]]],
       ['sandRotate', sandRotateWGSL, 'sandRotate', [[b.sandT, b.sandT2, b.sandSum, b.rockTop, b.rockPrev]]],
@@ -1133,10 +1133,10 @@ export class FluidSim {
         [[b.valid, b.velNew]],
       ],
       ['constrain', constrainWGSL, 'constrain', [[b.faceW, b.velNew, b.velTmp]]],
-      ['g2p', g2pWGSL, 'g2p', g2pSets, { AFFINE, SORT_BLOCK }],
-      ['g2pShed', g2pWGSL, 'g2p', g2pSets, { AFFINE, SHED: 1, FOAM_QUEUE, SORT_BLOCK }],
-      ['g2pKeys', g2pWGSL, 'g2p', g2pSets, { AFFINE, KEYS: 1, SORT_BLOCK }],
-      ['g2pShedKeys', g2pWGSL, 'g2p', g2pSets, { AFFINE, SHED: 1, FOAM_QUEUE, KEYS: 1, SORT_BLOCK }],
+      ['g2p', g2pWGSL, 'g2p', g2pSets, { AFFINE, SORT_BLOCK, STATS: this.statsOffset() / 4 }],
+      ['g2pShed', g2pWGSL, 'g2p', g2pSets, { AFFINE, SHED: 1, FOAM_QUEUE, SORT_BLOCK, STATS: this.statsOffset() / 4 }],
+      ['g2pKeys', g2pWGSL, 'g2p', g2pSets, { AFFINE, KEYS: 1, SORT_BLOCK, STATS: this.statsOffset() / 4 }],
+      ['g2pShedKeys', g2pWGSL, 'g2p', g2pSets, { AFFINE, SHED: 1, FOAM_QUEUE, KEYS: 1, SORT_BLOCK, STATS: this.statsOffset() / 4 }],
       ['sortScanBlocks', sortWGSL, 'sortScanBlocks', sort, { SORT_BLOCK, AFFINE }],
       ['sortScanGroups', sortWGSL, 'sortScanGroups', sort, { SORT_BLOCK, AFFINE }],
       ['sortScanAdd', sortWGSL, 'sortScanAdd', sort, { SORT_BLOCK, AFFINE }],
@@ -1181,9 +1181,9 @@ export class FluidSim {
     if (!k) return [];
     const b = this.buffers;
     const kb = k.buffers;
-    const sim: Resource[] = [kb.pos, kb.vel, kb.side, kb.pred, kb.info, kb.link, kb.chain, kb.aux, kb.aux2, k.paramsBuffer, b.velTmp, b.field, this.sandTexture.createView(), this.sandSampler];
+    const sim: Resource[] = [kb.pos, kb.vel, kb.side, kb.pred, kb.info, kb.link, kb.chain, k.paramsBuffer, b.velTmp, b.field, this.sandTexture.createView(), this.sandSampler];
     const build: Resource[] = [
-      kb.pos, kb.side, kb.info, kb.link, kb.aux, kb.aux2, kb.prim, kb.box, kb.cellCount, kb.cellFill, kb.cellRange, kb.refTotal, kb.shadeAcc, k.paramsBuffer,
+      kb.pos, kb.side, kb.info, kb.link, kb.chain, kb.prim, kb.box, kb.cellRange, kb.acc, k.paramsBuffer,
       k.primTexture.createView(), k.cellTexture.createView(), k.refTexture.createView(), k.shadeTexture.createView(),
     ];
     const simWGSL = `${kelpSharedWGSL()}\n${kelpSimWGSL}`;
@@ -1207,8 +1207,8 @@ export class FluidSim {
     const rb = r.buffers;
     const sim: Resource[] = [rb.pos, rb.vel, rb.pred, rb.info, rb.rest, rb.tent, r.paramsBuffer, b.velTmp, b.field, rb.fish, this.sandTexture.createView(), this.sandSampler, rb.flow];
     const build: Resource[] = [
-      rb.pos, rb.info, rb.look, rb.prim, rb.vert, rb.box, rb.cellCount, rb.cellFill, rb.cellRange, rb.refTotal, rb.shadeAcc, r.paramsBuffer, rb.fish,
-      r.primTexture.createView(), r.cellTexture.createView(), r.refTexture.createView(), r.shadeTexture.createView(), rb.coral, rb.coralInfo,
+      rb.pos, rb.info, rb.look, rb.prim, rb.vert, rb.box, rb.cellRange, rb.acc, r.paramsBuffer, rb.fish,
+      r.primTexture.createView(), r.cellTexture.createView(), r.refTexture.createView(), r.shadeTexture.createView(), rb.coral,
     ];
     const simWGSL = `${reefSharedWGSL()}\n${reefSimWGSL}`;
     const buildWGSL = `${reefSharedWGSL()}\n${reefBuildWGSL}`;
@@ -1419,9 +1419,7 @@ export class FluidSim {
   private encodeKelpBuild(enc: GPUCommandEncoder): void {
     const k = this.kelp!;
     const kb = k.buffers;
-    enc.clearBuffer(kb.cellCount);
-    enc.clearBuffer(kb.refTotal);
-    enc.clearBuffer(kb.shadeAcc);
+    enc.clearBuffer(kb.acc);
     const pass = this.beginPass(enc, 'kelp build');
     const pg: Dispatch = [Math.ceil(k.data.primCount / 64), 1, 1];
     this.run(pass, 'kelpPrims', pg);
@@ -1438,9 +1436,7 @@ export class FluidSim {
   private encodeReefBuild(enc: GPUCommandEncoder): void {
     const r = this.reef!;
     const rb = r.buffers;
-    enc.clearBuffer(rb.cellCount);
-    enc.clearBuffer(rb.refTotal);
-    enc.clearBuffer(rb.shadeAcc);
+    enc.clearBuffer(rb.acc);
     const pass = this.beginPass(enc, 'reef build');
     this.run(pass, 'reefVerts', [Math.ceil((BODY_VERTS + MAX_FISH * (FISH_POINTS - 1)) / 64), 1, 1]);
     const pg: Dispatch = [Math.ceil(r.data.primCount / 64), 1, 1];
@@ -1485,12 +1481,17 @@ export class FluidSim {
     pass.end();
   }
 
+  /** Where the stats lie in the block counts' buffer, after them (bytes). */
+  private statsOffset(): number {
+    return Math.ceil(this.n / SORT_BLOCK) ** 3 * 4;
+  }
+
   private encodeReadback(enc: GPUCommandEncoder): void {
     const slot = this.staging.find((s) => !s.busy);
     if (!slot) return;
     slot.busy = true;
     slot.time = this.simulated;
-    enc.copyBufferToBuffer(this.buffers.stats, 0, slot.buffer, 0, 16);
+    enc.copyBufferToBuffer(this.buffers.blockCount, this.statsOffset(), slot.buffer, 0, 16);
     enc.copyBufferToBuffer(this.buffers.probeOut, 0, slot.buffer, 16, PROBES * 32);
     enc.copyBufferToBuffer(this.buffers.centroidAcc, 0, slot.buffer, 16 + PROBES * 32, 16);
     if (this.rt) enc.copyBufferToBuffer(this.rt.regions.counts, 0, slot.buffer, READBACK_RT, 16);

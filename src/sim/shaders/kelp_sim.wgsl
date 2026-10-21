@@ -30,14 +30,17 @@
 @group(0) @binding(4) var<storage, read_write> kPred: array<vec4f>;
 @group(0) @binding(5) var<storage, read> kInfo: array<vec4f>;
 @group(0) @binding(6) var<storage, read> kLink: array<vec4u>;
-@group(0) @binding(7) var<storage, read> kChain: array<vec4u>;
-@group(0) @binding(8) var<storage, read> kAux: array<vec4f>;
-@group(0) @binding(9) var<storage, read> kAux2: array<vec4f>;
-@group(0) @binding(10) var<uniform> K: KelpParams;
-@group(0) @binding(11) var<storage, read> gridVel: array<f32>;
-@group(0) @binding(12) var<storage, read> field: array<f32>;
-@group(0) @binding(13) var sandTex: texture_2d<f32>;
-@group(0) @binding(14) var sandSamp: sampler;
+// Per chain, three entries: its chain, aux and aux2 (the floats as bits): one binding, not three.
+@group(0) @binding(7) var<storage, read> kChains: array<vec4u>;
+@group(0) @binding(8) var<uniform> K: KelpParams;
+@group(0) @binding(9) var<storage, read> gridVel: array<f32>;
+@group(0) @binding(10) var<storage, read> field: array<f32>;
+@group(0) @binding(11) var sandTex: texture_2d<f32>;
+@group(0) @binding(12) var sandSamp: sampler;
+
+fn kChain(c: u32) -> vec4u { return kChains[3u * c]; }
+fn kAux(c: u32) -> vec4f { return bitcast<vec4f>(kChains[3u * c + 1u]); }
+fn kAux2(c: u32) -> vec4f { return bitcast<vec4f>(kChains[3u * c + 2u]); }
 
 const NONE: u32 = 0xffffffffu;
 const CHAIN_BLADE: u32 = 1u;
@@ -54,9 +57,7 @@ fn kelpTouch() {
   _ = arrayLength(&kPred);
   _ = arrayLength(&kInfo);
   _ = arrayLength(&kLink);
-  _ = arrayLength(&kChain);
-  _ = arrayLength(&kAux);
-  _ = arrayLength(&kAux2);
+  _ = arrayLength(&kChains);
   _ = K.counts;
   _ = arrayLength(&gridVel);
   _ = arrayLength(&field);
@@ -143,8 +144,8 @@ fn kStipeTangent(k: u32) -> vec3f {
 // Which way blade c grows from its stalk: out from the stipe at its azimuth (round the stipe's
 // frame) and angle (away from the stipe's direction).
 fn kBladeRest(c: u32) -> vec3f {
-  let ch = kChain[c];
-  let aux = kAux[c];
+  let ch = kChain(c);
+  let aux = kAux(c);
   let t = kStipeTangent(ch.z);
   let r = kSide[ch.z].xyz;
   let out = r * cos(aux.x) + cross(t, r) * sin(aux.x);
@@ -157,7 +158,7 @@ fn kelpPredict(@builtin(global_invocation_id) gid: vec3u) {
   let k = gid.x;
   if (k >= u32(K.counts.x)) { return; }
   let lk = kLink[k];
-  let ch = kChain[lk.z];
+  let ch = kChain(lk.z);
   let x = kPos[k].xyz;
   let blade = ch.w == CHAIN_BLADE;
   // (Anchors and the cloth's base row are placed by kelpStipes and kelpBlades.)
@@ -234,8 +235,8 @@ fn kelpPredict(@builtin(global_invocation_id) gid: vec3u) {
     axis = kSafeDir(cross(across, along), up);
     kAxis = w.w / info.z;
     kOther = kAxis * K.phys2.x;
-    let aux = kAux[lk.z];
-    let seed = kAux2[lk.z].w;
+    let aux = kAux(lk.z);
+    let seed = kAux2(lk.z).w;
     let s = f32(r) / f32(KELP_ROWS - 1u);
     // (A gentle flutter at most: the slip it feels is capped, so a hard slosh streams the blade
     // out rather than thrashing it.)
@@ -264,13 +265,13 @@ fn kelpStipes(@builtin(global_invocation_id) gid: vec3u) {
   kelpTouch();
   let c = gid.x;
   if (c >= u32(K.counts.y)) { return; }
-  let ch = kChain[c];
+  let ch = kChain(c);
   let first = ch.x;
   let n = min(ch.y, MAX_STIPE);
   let dt = P.dt;
 
   // The anchor: fixed to the globe, kept below the sand.
-  let an = kAux[c];
+  let an = kAux(c);
   var a = K.rot0.xyz * an.x + K.rot1.xyz * an.y + K.rot2.xyz * an.z;
   a.y = min(a.y, sandTop(a) - an.w);
   var old: array<vec3f, MAX_STIPE>;
@@ -372,12 +373,12 @@ fn kelpBlades(@builtin(global_invocation_id) gid: vec3u) {
   let j = gid.x;
   if (j >= u32(K.counts.z)) { return; }
   let c = u32(K.counts.y) + j;
-  let ch = kChain[c];
+  let ch = kChain(c);
   let first = ch.x;
   let att = ch.z;
   let dt = P.dt;
-  let aux = kAux[c];
-  let aux2 = kAux2[c];
+  let aux = kAux(c);
+  let aux2 = kAux2(c);
 
   // The stalk: from its stipe node, its length towards its prediction.
   let S = kPos[att].xyz;
