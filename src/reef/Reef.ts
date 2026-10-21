@@ -98,14 +98,12 @@ export class Reef {
       prim: make('anemone primitives', d.primCount * 16),
       vert: make('anemone body', BODY_VERTS * 32),
       box: make('anemone bounds', d.primCount * 32),
-      cellCount: make('anemone cell counts', cells * 4),
-      cellFill: make('anemone cell fill', cells * 4),
+      // (reef_build.wgsl's counters: the cells' counts and fill, the reference total, the opacity grid.)
+      acc: make('anemone counters', (2 * cells + 4 + shade) * 4),
       cellRange: make('anemone cell ranges', cells * 8),
-      refTotal: make('anemone reference total', 16),
-      shadeAcc: make('anemone shadow', shade * 4),
       fish: make('clownfish bodies', MAX_FISH * FISH_TEXELS * 16),
-      coral: make('coral branches', this.corals.count * 32),
-      coralInfo: make('coral branch info', this.corals.count * 16),
+      // (Each branch's two ends, then its info: the build kernels bind one buffer, not two.)
+      coral: make('coral branches', this.corals.count * 48),
     };
     const b = this.buffers;
     device.queue.writeBuffer(b.info, 0, d.info);
@@ -113,8 +111,12 @@ export class Reef {
     device.queue.writeBuffer(b.tent, 0, d.tent);
     device.queue.writeBuffer(b.look, 0, d.look);
     device.queue.writeBuffer(b.prim, 0, d.prims);
-    device.queue.writeBuffer(b.coral, 0, this.corals.segs);
-    device.queue.writeBuffer(b.coralInfo, 0, this.corals.info);
+    const packed = new Float32Array(this.corals.count * 12);
+    for (let i = 0; i < this.corals.count; i++) {
+      packed.set(this.corals.segs.subarray(8 * i, 8 * i + 8), 12 * i);
+      packed.set(this.corals.info.subarray(4 * i, 4 * i + 4), 12 * i + 8);
+    }
+    device.queue.writeBuffer(b.coral, 0, packed);
     this.reset();
 
     this.paramsBuffer = device.createBuffer({ label: 'reef params', size: PARAMS_FLOATS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });

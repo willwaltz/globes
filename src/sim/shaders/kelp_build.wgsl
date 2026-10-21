@@ -17,20 +17,26 @@
 @group(0) @binding(2) var<storage, read> kSide: array<vec4f>;
 @group(0) @binding(3) var<storage, read> kInfo: array<vec4f>;
 @group(0) @binding(4) var<storage, read> kLink: array<vec4u>;
-@group(0) @binding(5) var<storage, read> kAux: array<vec4f>;
-@group(0) @binding(6) var<storage, read> kAux2: array<vec4f>;
-@group(0) @binding(7) var<storage, read> kPrim: array<vec4u>;
-@group(0) @binding(8) var<storage, read_write> kBox: array<vec4f>;
-@group(0) @binding(9) var<storage, read_write> cellCount: array<atomic<u32>>;
-@group(0) @binding(10) var<storage, read_write> cellFill: array<atomic<u32>>;
-@group(0) @binding(11) var<storage, read_write> cellRange: array<vec2u>;
-@group(0) @binding(12) var<storage, read_write> refTotal: array<atomic<u32>>;
-@group(0) @binding(13) var<storage, read_write> shadeAcc: array<atomic<u32>>;
-@group(0) @binding(14) var<uniform> K: KelpParams;
-@group(0) @binding(15) var primTex: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(16) var cellTex: texture_storage_3d<rg32float, write>;
-@group(0) @binding(17) var refTex: texture_storage_2d<rgba32float, write>;
-@group(0) @binding(18) var shadeTex: texture_storage_3d<rgba16float, write>;
+// Per chain, three entries: its chain, aux and aux2 (the floats as bits; as in kelp_sim.wgsl).
+@group(0) @binding(5) var<storage, read> kChains: array<vec4u>;
+@group(0) @binding(6) var<storage, read> kPrim: array<vec4u>;
+@group(0) @binding(7) var<storage, read_write> kBox: array<vec4f>;
+@group(0) @binding(8) var<storage, read_write> cellRange: array<vec2u>;
+// The counters, in one binding: each cell's count and fill, the reference total, the opacity grid.
+@group(0) @binding(9) var<storage, read_write> acc: array<atomic<u32>>;
+@group(0) @binding(10) var<uniform> K: KelpParams;
+@group(0) @binding(11) var primTex: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(12) var cellTex: texture_storage_3d<rg32float, write>;
+@group(0) @binding(13) var refTex: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(14) var shadeTex: texture_storage_3d<rgba16float, write>;
+
+const CELLS: u32 = u32(KELP_GRID) * u32(KELP_GRID) * u32(KELP_GRID);
+const FILL_AT: u32 = CELLS;
+const TOTAL_AT: u32 = 2u * CELLS;
+const SHADE_AT: u32 = 2u * CELLS + 4u;
+
+fn kAux(c: u32) -> vec4f { return bitcast<vec4f>(kChains[3u * c + 1u]); }
+fn kAux2(c: u32) -> vec4f { return bitcast<vec4f>(kChains[3u * c + 2u]); }
 
 const PRIM_STIPE: u32 = 0u;
 const PRIM_BLADDER: u32 = 1u;
@@ -46,15 +52,11 @@ fn kelpTouch() {
   _ = arrayLength(&kSide);
   _ = arrayLength(&kInfo);
   _ = arrayLength(&kLink);
-  _ = arrayLength(&kAux);
-  _ = arrayLength(&kAux2);
+  _ = arrayLength(&kChains);
   _ = arrayLength(&kPrim);
   _ = arrayLength(&kBox);
-  _ = arrayLength(&cellCount);
-  _ = arrayLength(&cellFill);
   _ = arrayLength(&cellRange);
-  _ = arrayLength(&refTotal);
-  _ = arrayLength(&shadeAcc);
+  _ = arrayLength(&acc);
   _ = K.counts;
   _ = textureDimensions(primTex);
   _ = textureDimensions(cellTex);
@@ -96,7 +98,7 @@ fn kelpShadow(x: vec3f, area: f32) {
     let q = b + vec3i(o);
     if (any(q < vec3i(0)) || any(q >= vec3i(n))) { continue; }
     let wv = mix(1.0 - f, f, vec3f(o));
-    atomicAdd(&shadeAcc[u32(q.x + n * (q.y + n * q.z))], u32(area * wv.x * wv.y * wv.z * SHADE_FP));
+    atomicAdd(&acc[SHADE_AT + u32(q.x + n * (q.y + n * q.z))], u32(area * wv.x * wv.y * wv.z * SHADE_FP));
   }
 }
 
@@ -198,8 +200,8 @@ fn kelpPrims(@builtin(global_invocation_id) gid: vec3u) {
     let col = pr.w >> 24u;
     let first = pr.y - (r * KELP_COLS + col); // the cloth's first particle
     let c = u32(K.counts.y) + blade;
-    let aux = kAux[c];
-    let aux2 = kAux2[c];
+    let aux = kAux(c);
+    let aux2 = kAux2(c);
     let q00 = kPos[pr.y].xyz;
     let q10 = kPos[pr.y + 1u].xyz;
     let q01 = kPos[pr.y + KELP_COLS].xyz;
@@ -246,7 +248,7 @@ fn kelpPrims(@builtin(global_invocation_id) gid: vec3u) {
   for (var z = c0.z; z <= c1.z; z++) {
     for (var y = c0.y; y <= c1.y; y++) {
       for (var x = c0.x; x <= c1.x; x++) {
-        atomicAdd(&cellCount[kelpCellIndex(vec3i(x, y, z))], 1u);
+        atomicAdd(&acc[kelpCellIndex(vec3i(x, y, z))], 1u);
       }
     }
   }
@@ -257,14 +259,14 @@ fn kelpAlloc(@builtin(global_invocation_id) gid: vec3u) {
   kelpTouch();
   if (any(gid >= vec3u(u32(KELP_GRID)))) { return; }
   let c = kelpCellIndex(vec3i(gid));
-  var n = atomicLoad(&cellCount[c]);
+  var n = atomicLoad(&acc[c]);
   var start = 0u;
   if (n > 0u) {
-    start = atomicAdd(&refTotal[0], n);
+    start = atomicAdd(&acc[TOTAL_AT], n);
     n = select(min(n, KELP_REF_CAP - start), 0u, start >= KELP_REF_CAP);
   }
   cellRange[c] = vec2u(start, n);
-  atomicStore(&cellFill[c], 0u);
+  atomicStore(&acc[FILL_AT + c], 0u);
   textureStore(cellTex, vec3i(gid), vec4f(f32(start), f32(n), 0.0, 0.0));
 }
 
@@ -286,7 +288,7 @@ fn kelpFill(@builtin(global_invocation_id) gid: vec3u) {
       for (var x = c0.x; x <= c1.x; x++) {
         let c = kelpCellIndex(vec3i(x, y, z));
         let rg = cellRange[c];
-        let s = atomicAdd(&cellFill[c], 1u);
+        let s = atomicAdd(&acc[FILL_AT + c], 1u);
         if (s < rg.y) {
           let slot = rg.x + s;
           textureStore(refTex, vec2i(i32(slot % KELP_REF_WIDTH), i32(slot / KELP_REF_WIDTH)), sphere);
@@ -303,6 +305,6 @@ fn kelpShade(@builtin(global_invocation_id) gid: vec3u) {
   if (any(gid >= vec3u(n))) { return; }
   let i = gid.x + n * (gid.y + n * gid.z);
   let vox = 2.0 * P.radius / f32(n);
-  let sigma = f32(atomicLoad(&shadeAcc[i])) / SHADE_FP / (vox * vox * vox);
+  let sigma = f32(atomicLoad(&acc[SHADE_AT + i])) / SHADE_FP / (vox * vox * vox);
   textureStore(shadeTex, vec3i(gid), vec4f(sigma, 0.0, 0.0, 1.0));
 }

@@ -97,23 +97,26 @@ export class KelpForest {
       pred: make('kelp predictions', d.nodeCount * 16),
       info: make('kelp node info', d.nodeCount * 16),
       link: make('kelp links', d.nodeCount * 16),
-      chain: make('kelp chains', chains * 16),
-      aux: make('kelp chain info', chains * 16),
-      aux2: make('kelp chain info 2', chains * 16),
+      // (Each chain's chain, aux and aux2 together: the kernels bind one buffer, not three.)
+      chain: make('kelp chains', chains * 48),
       prim: make('kelp primitives', d.primCount * 16),
       box: make('kelp bounds', d.primCount * 32),
-      cellCount: make('kelp cell counts', cells * 4),
-      cellFill: make('kelp cell fill', cells * 4),
+      // (kelp_build.wgsl's counters: the cells' counts and fill, the reference total, the opacity grid.)
+      acc: make('kelp counters', (2 * cells + 4 + KELP_SHADE_GRID ** 3) * 4),
       cellRange: make('kelp cell ranges', cells * 8),
-      refTotal: make('kelp reference total', 16),
-      shadeAcc: make('kelp shadow', KELP_SHADE_GRID ** 3 * 4),
     };
     const b = this.buffers;
     device.queue.writeBuffer(b.info, 0, d.info);
     device.queue.writeBuffer(b.link, 0, d.link);
-    device.queue.writeBuffer(b.chain, 0, d.chain);
-    device.queue.writeBuffer(b.aux, 0, d.aux);
-    device.queue.writeBuffer(b.aux2, 0, d.aux2);
+    const packed = new Uint32Array(chains * 12);
+    const auxBits = new Uint32Array(d.aux.buffer, d.aux.byteOffset, d.aux.length);
+    const aux2Bits = new Uint32Array(d.aux2.buffer, d.aux2.byteOffset, d.aux2.length);
+    for (let c = 0; c < chains; c++) {
+      packed.set(d.chain.subarray(4 * c, 4 * c + 4), 12 * c);
+      packed.set(auxBits.subarray(4 * c, 4 * c + 4), 12 * c + 4);
+      packed.set(aux2Bits.subarray(4 * c, 4 * c + 4), 12 * c + 8);
+    }
+    device.queue.writeBuffer(b.chain, 0, packed);
     device.queue.writeBuffer(b.prim, 0, d.prims);
     this.reset();
 
